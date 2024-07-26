@@ -2,23 +2,21 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:app_links/app_links.dart';
-import 'package:badges/badges.dart' as badges;
 import 'package:clipboard_watcher/clipboard_watcher.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:flutter_vector_icons/flutter_vector_icons.dart';
-import 'package:hive/hive.dart';
 import 'package:logging/logging.dart';
 import 'package:lottie/lottie.dart';
 import 'package:provider/provider.dart';
 import 'package:wallet_connect_uri_validator/wallet_connect_uri_validator.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:zenon_syrius_wallet_flutter/blocs/blocs.dart';
+import 'package:zenon_syrius_wallet_flutter/handlers/htlc_swaps_handler.dart';
 import 'package:zenon_syrius_wallet_flutter/main.dart';
 import 'package:zenon_syrius_wallet_flutter/model/model.dart';
-import 'package:zenon_syrius_wallet_flutter/services/i_web3wallet_service.dart';
 import 'package:zenon_syrius_wallet_flutter/utils/app_colors.dart';
 import 'package:zenon_syrius_wallet_flutter/utils/clipboard_utils.dart';
 import 'package:zenon_syrius_wallet_flutter/utils/constants.dart';
@@ -44,9 +42,9 @@ enum Tabs {
   staking,
   plasma,
   tokens,
+  p2pSwap,
   generation,
   sync,
-  bridge,
   accelerator,
   walletConnect,
 }
@@ -94,11 +92,7 @@ class _MainAppContainerState extends State<MainAppContainer>
 
     _netSyncStatusBloc.getDataPeriodically();
 
-    _transferTabChild = TransferTabChild(
-      navigateToBridgeTab: () {
-        _navigateTo(Tabs.bridge);
-      },
-    );
+    _transferTabChild = TransferTabChild();
     _initTabController();
     _animationController = AnimationController(
       vsync: this,
@@ -205,7 +199,7 @@ class _MainAppContainerState extends State<MainAppContainer>
                   ),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 20.0,
+                      horizontal: 12.0,
                     ),
                     child: Focus(
                       focusNode: _focusNode,
@@ -266,8 +260,9 @@ class _MainAppContainerState extends State<MainAppContainer>
     );
   }
 
-  void _onNavigateToLock() {
-    kKeyStore = null;
+  void _onNavigateToLock() async {
+    if (kWalletFile != null) kWalletFile!.close();
+    kWalletFile = null;
     _navigateToLockTimer?.cancel();
   }
 
@@ -283,45 +278,26 @@ class _MainAppContainerState extends State<MainAppContainer>
   List<Tab> _getTextTabs() {
     return kTabsWithTextTitles
         .map<Tab>(
-          (e) => Tab(
-            text: FormatUtils.extractNameFromEnum<Tabs>(e).capitalize(),
-          ),
+          (e) => e == Tabs.p2pSwap
+              ? const Tab(text: 'P2P Swap')
+              : Tab(
+                  text: FormatUtils.extractNameFromEnum<Tabs>(e).capitalize()),
         )
         .toList();
   }
 
   List<Tab> _getIconTabs() {
     return <Tab>[
-      Tab(
-        child: Icon(
-          MaterialCommunityIcons.bridge,
-          size: 24.0,
-          color: _isTabSelected(Tabs.bridge)
-              ? AppColors.znnColor
-              : Theme.of(context).iconTheme.color,
-        ),
-      ),
       if (kWcProjectId.isNotEmpty)
         Tab(
-          child: badges.Badge(
-            position: badges.BadgePosition.topEnd(top: -12.5, end: -12.5),
-            showBadge: (sl<IWeb3WalletService>().pairings.value.isNotEmpty),
-            badgeContent:
-                Text(sl<IWeb3WalletService>().pairings.value.length.toString()),
-            badgeStyle: const badges.BadgeStyle(
-              shape: badges.BadgeShape.circle,
-              badgeColor: AppColors.znnColor,
-              padding: EdgeInsets.all(3.5),
-            ),
-            child: SvgPicture.asset(
-              'assets/svg/walletconnect-logo.svg',
-              width: 24.0,
-              fit: BoxFit.fitWidth,
-              colorFilter: _isTabSelected(Tabs.walletConnect)
-                  ? const ColorFilter.mode(AppColors.znnColor, BlendMode.srcIn)
-                  : ColorFilter.mode(
-                      Theme.of(context).iconTheme.color!, BlendMode.srcIn),
-            ),
+          child: SvgPicture.asset(
+            'assets/svg/walletconnect-logo.svg',
+            width: 24.0,
+            fit: BoxFit.fitWidth,
+            colorFilter: _isTabSelected(Tabs.walletConnect)
+                ? const ColorFilter.mode(AppColors.znnColor, BlendMode.srcIn)
+                : ColorFilter.mode(
+                    Theme.of(context).iconTheme.color!, BlendMode.srcIn),
           ),
         ),
       Tab(
@@ -343,22 +319,12 @@ class _MainAppContainerState extends State<MainAppContainer>
         ),
       ),
       Tab(
-        child: badges.Badge(
-          position: badges.BadgePosition.topEnd(top: -10, end: -10),
-          showBadge: (Hive.box(kNotificationsBox).length > 0),
-          badgeContent: Text(Hive.box(kNotificationsBox).length.toString()),
-          badgeStyle: const badges.BadgeStyle(
-            shape: badges.BadgeShape.circle,
-            badgeColor: AppColors.znnColor,
-            padding: EdgeInsets.all(3.5),
-          ),
-          child: Icon(
-            Icons.notifications,
-            size: 24.0,
-            color: _isTabSelected(Tabs.notifications)
-                ? AppColors.znnColor
-                : Theme.of(context).iconTheme.color,
-          ),
+        child: Icon(
+          Icons.notifications,
+          size: 24.0,
+          color: _isTabSelected(Tabs.notifications)
+              ? AppColors.znnColor
+              : Theme.of(context).iconTheme.color,
         ),
       ),
       Tab(
@@ -463,11 +429,10 @@ class _MainAppContainerState extends State<MainAppContainer>
           syncState = SyncState.syncDone;
           return Tooltip(
               message: message,
-              child: Lottie.asset(
-                'assets/lottie/ic_anim_live.json',
-                fit: BoxFit.contain,
-                width: 25.0,
-                repeat: true,
+              child: Icon(
+                Icons.radio_button_unchecked,
+                size: 24.0,
+                color: _getSyncIconColor(syncState),
               ));
         } else if (syncInfo.targetHeight == 0 || syncInfo.currentHeight == 0) {
           message = 'Started syncing with the network, please wait';
@@ -482,13 +447,14 @@ class _MainAppContainerState extends State<MainAppContainer>
           return Tooltip(
             message: message,
             child: SizedBox(
-              height: 25.0,
-              width: 25.0,
+              height: 18.0,
+              width: 18.0,
               child: Center(
                   child: CircularProgressIndicator(
                 backgroundColor: Theme.of(context).iconTheme.color,
                 color: _getSyncIconColor(syncState),
                 value: syncInfo.currentHeight / syncInfo.targetHeight,
+                strokeWidth: 3.0,
               )),
             ),
           );
@@ -510,13 +476,14 @@ class _MainAppContainerState extends State<MainAppContainer>
           return Tooltip(
               message: message,
               child: SizedBox(
-                  height: 25.0,
-                  width: 25.0,
+                  height: 18.0,
+                  width: 18.0,
                   child: Center(
                       child: CircularProgressIndicator(
                     backgroundColor: Theme.of(context).iconTheme.color,
                     color: _getSyncIconColor(syncState),
                     value: syncInfo.currentHeight / syncInfo.targetHeight,
+                    strokeWidth: 3.0,
                   ))));
         } else if (syncInfo.targetHeight == 0 || syncInfo.currentHeight == 0) {
           message = 'Connecting to peers, please wait';
@@ -532,13 +499,14 @@ class _MainAppContainerState extends State<MainAppContainer>
           return Tooltip(
               message: message,
               child: SizedBox(
-                  height: 25.0,
-                  width: 25.0,
+                  height: 18.0,
+                  width: 18.0,
                   child: Center(
                       child: CircularProgressIndicator(
                     backgroundColor: Theme.of(context).iconTheme.color,
                     color: _getSyncIconColor(syncState),
                     value: syncInfo.currentHeight / syncInfo.targetHeight,
+                    strokeWidth: 3.0,
                   ))));
         }
       } else {
@@ -555,13 +523,19 @@ class _MainAppContainerState extends State<MainAppContainer>
     }
 
     return Tooltip(
-        message: message,
-        child: Lottie.asset(
-          'assets/lottie/ic_anim_live.json',
-          fit: BoxFit.contain,
-          width: 25.0,
-          repeat: true,
-        ));
+      message: message,
+      child: SizedBox(
+        height: 18.0,
+        width: 18.0,
+        child: Center(
+            child: CircularProgressIndicator(
+          backgroundColor: Theme.of(context).iconTheme.color,
+          color: _getSyncIconColor(syncState),
+          value: 1,
+          strokeWidth: 2.0,
+        )),
+      ),
+    );
   }
 
   Widget _getCurrentPageContainer() {
@@ -585,7 +559,10 @@ class _MainAppContainerState extends State<MainAppContainer>
           onStepperNotificationSeeMorePressed: () =>
               _navigateTo(Tabs.notifications),
         ),
-        const BridgeTabChild(),
+        P2pSwapTabChild(
+          onStepperNotificationSeeMorePressed: () =>
+              _navigateTo(Tabs.notifications),
+        ),
         if (kWcProjectId.isNotEmpty) const WalletConnectTabChild(),
         AcceleratorTabChild(
           onStepperNotificationSeeMorePressed: () =>
@@ -610,10 +587,7 @@ class _MainAppContainerState extends State<MainAppContainer>
   }
 
   Future<void> _mainLockCallback(String password) async {
-    _navigateToLockTimer = Timer.periodic(
-      Duration(minutes: kAutoLockWalletMinutes!),
-      (timer) => _lockBloc.addEvent(LockEvent.navigateToLock),
-    );
+    _navigateToLockTimer = _createAutoLockTimer();
     if (kLastWalletConnectUriNotifier.value != null) {
       _tabController!.animateTo(_getTabChildIndex(Tabs.walletConnect));
     } else {
@@ -634,8 +608,8 @@ class _MainAppContainerState extends State<MainAppContainer>
     super.dispose();
   }
 
-  void _onChangeAutoLockTime() {
-    sl.get<NotificationsBloc>().addNotification(
+  Future<void> _onChangeAutoLockTime() async {
+    await sl.get<NotificationsBloc>().addNotification(
           WalletNotification(
             title: 'Auto-lock interval changed successfully',
             details: 'Auto-lock interval changed successfully to '
@@ -649,12 +623,7 @@ class _MainAppContainerState extends State<MainAppContainer>
   }
 
   void _afterAppInitCallback() {
-    _navigateToLockTimer = Timer.periodic(
-      Duration(
-        minutes: kAutoLockWalletMinutes!,
-      ),
-      (timer) => _lockBloc.addEvent(LockEvent.navigateToLock),
-    );
+    _navigateToLockTimer = _createAutoLockTimer();
     if (kLastWalletConnectUriNotifier.value != null) {
       _tabController!.animateTo(_getTabChildIndex(Tabs.walletConnect));
     } else {
@@ -739,10 +708,7 @@ class _MainAppContainerState extends State<MainAppContainer>
       switch (event) {
         case LockEvent.countDown:
           if (kCurrentPage != Tabs.lock) {
-            _navigateToLockTimer = Timer.periodic(
-              Duration(minutes: kAutoLockWalletMinutes!),
-              (timer) => _lockBloc.addEvent(LockEvent.navigateToLock),
-            );
+            _navigateToLockTimer = _createAutoLockTimer();
           }
           break;
         case LockEvent.navigateToDashboard:
@@ -763,10 +729,7 @@ class _MainAppContainerState extends State<MainAppContainer>
         case LockEvent.resetTimer:
           if (_navigateToLockTimer != null && _navigateToLockTimer!.isActive) {
             _navigateToLockTimer?.cancel();
-            _navigateToLockTimer = Timer.periodic(
-              Duration(minutes: kAutoLockWalletMinutes!),
-              (timer) => _lockBloc.addEvent(LockEvent.navigateToLock),
-            );
+            _navigateToLockTimer = _createAutoLockTimer();
           }
           break;
         case LockEvent.navigateToPreviousTab:
@@ -779,8 +742,16 @@ class _MainAppContainerState extends State<MainAppContainer>
     }
   }
 
+  Timer _createAutoLockTimer() {
+    return Timer.periodic(Duration(minutes: kAutoLockWalletMinutes!), (timer) {
+      if (!sl<HtlcSwapsHandler>().hasActiveIncomingSwaps) {
+        _lockBloc.addEvent(LockEvent.navigateToLock);
+      }
+    });
+  }
+
   void _handleIncomingLinks() async {
-    if (!kIsWeb) {
+    if (!kIsWeb && !Platform.isLinux) {
       _incomingLinkSubscription =
           _appLinks.allUriLinkStream.listen((Uri? uri) async {
         if (!await windowManager.isFocused() ||
@@ -801,7 +772,7 @@ class _MainAppContainerState extends State<MainAppContainer>
               }
               String wcUri = Uri.decodeFull(uriRaw.split('wc?uri=').last);
               if (WalletConnectUri.tryParse(wcUri) != null) {
-                _updateWalletConnectUri(wcUri);
+                await _updateWalletConnectUri(wcUri);
               }
               return;
             }
@@ -849,7 +820,7 @@ class _MainAppContainerState extends State<MainAppContainer>
             if (context.mounted) {
               switch (uri.host) {
                 case 'transfer':
-                  sl<NotificationsBloc>().addNotification(
+                  await sl<NotificationsBloc>().addNotification(
                     WalletNotification(
                       title: 'Transfer action detected',
                       timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -891,7 +862,7 @@ class _MainAppContainerState extends State<MainAppContainer>
                   break;
 
                 case 'stake':
-                  sl<NotificationsBloc>().addNotification(
+                  await sl<NotificationsBloc>().addNotification(
                     WalletNotification(
                       title: 'Stake action detected',
                       timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -926,7 +897,7 @@ class _MainAppContainerState extends State<MainAppContainer>
                   break;
 
                 case 'delegate':
-                  sl<NotificationsBloc>().addNotification(
+                  await sl<NotificationsBloc>().addNotification(
                     WalletNotification(
                       title: 'Delegate action detected',
                       timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -959,7 +930,7 @@ class _MainAppContainerState extends State<MainAppContainer>
                   break;
 
                 case 'fuse':
-                  sl<NotificationsBloc>().addNotification(
+                  await sl<NotificationsBloc>().addNotification(
                     WalletNotification(
                       title: 'Fuse ${kQsrCoin.symbol} action detected',
                       timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -993,7 +964,7 @@ class _MainAppContainerState extends State<MainAppContainer>
                   break;
 
                 case 'sentinel':
-                  sl<NotificationsBloc>().addNotification(
+                  await sl<NotificationsBloc>().addNotification(
                     WalletNotification(
                       title: 'Deploy Sentinel action detected',
                       timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -1008,7 +979,7 @@ class _MainAppContainerState extends State<MainAppContainer>
                   break;
 
                 case 'pillar':
-                  sl<NotificationsBloc>().addNotification(
+                  await sl<NotificationsBloc>().addNotification(
                     WalletNotification(
                       title: 'Deploy Pillar action detected',
                       timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -1023,7 +994,7 @@ class _MainAppContainerState extends State<MainAppContainer>
                   break;
 
                 default:
-                  sl<NotificationsBloc>().addNotification(
+                  await sl<NotificationsBloc>().addNotification(
                     WalletNotification(
                       title: 'Incoming link detected',
                       timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -1040,8 +1011,8 @@ class _MainAppContainerState extends State<MainAppContainer>
       }, onDone: () {
         Logger('MainAppContainer')
             .log(Level.INFO, '_handleIncomingLinks', 'done');
-      }, onError: (Object err) {
-        NotificationUtils.sendNotificationError(
+      }, onError: (Object err) async {
+        await NotificationUtils.sendNotificationError(
             err, 'Handle incoming link failed');
         Logger('MainAppContainer')
             .log(Level.WARNING, '_handleIncomingLinks', err);
@@ -1083,11 +1054,11 @@ class _MainAppContainerState extends State<MainAppContainer>
     }
   }
 
-  void _updateWalletConnectUri(String text) {
+  Future<void> _updateWalletConnectUri(String text) async {
     kLastWalletConnectUriNotifier.value = text;
     if (!_isWalletLocked()) {
       if (kCurrentPage != Tabs.walletConnect) {
-        sl<NotificationsBloc>().addNotification(
+        await sl<NotificationsBloc>().addNotification(
           WalletNotification(
             title:
                 'WalletConnect link detected. Go to WalletConnect tab to connect.',

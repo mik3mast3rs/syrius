@@ -129,8 +129,8 @@ class ProjectListBloc with RefreshBlocMixin {
 
   /*
   This method filters the projects according to the following rule:
-  if a user doesn't have a Pillar, then we only show him the active
-  projects
+  if a user doesn't have a Pillar, only show the active
+  projects or all owned projects
    */
   Future<List<Project>> _filterProjectsAccordingToPillarInfo(
       Set<Project> projectList) async {
@@ -142,7 +142,7 @@ class ProjectListBloc with RefreshBlocMixin {
           .where(
             (project) =>
                 project.status == AcceleratorProjectStatus.active ||
-                project.owner.toString() == kSelectedAddress,
+                kDefaultAddressList.contains(project.owner.toString()),
           )
           .toList();
       if (activeProjects.isNotEmpty) {
@@ -207,6 +207,7 @@ class ProjectListBloc with RefreshBlocMixin {
   Future<Set<Project>> _filterProjectsByTags(List<Project> projects) async {
     if (selectedProjectsFilterTag.isNotEmpty) {
       Iterable<Hash>? votedProjectIds;
+      Iterable<Hash>? votedPhaseIds;
       Iterable<Project> filteredProjects = projects;
       if (selectedProjectsFilterTag.contains(AccProjectsFilterTag.myProjects)) {
         filteredProjects = filteredProjects.where(
@@ -219,19 +220,29 @@ class ProjectListBloc with RefreshBlocMixin {
             (project) => project.status == AcceleratorProjectStatus.active);
       }
       if (selectedProjectsFilterTag
-          .contains(AccProjectsFilterTag.votingOpened)) {
+          .contains(AccProjectsFilterTag.needsVoting)) {
         votedProjectIds ??= await _getVotedProjectIdsByPillar(filteredProjects);
+        votedPhaseIds ??= await _getVotedPhaseIdsByPillar(filteredProjects);
         filteredProjects = filteredProjects.where(
           (project) =>
-              project.status == AcceleratorProjectStatus.voting &&
-              !votedProjectIds!.contains(project.id),
+              (project.status == AcceleratorProjectStatus.voting &&
+                  !votedProjectIds!.contains(project.id)) ||
+              project.phases.any((phase) =>
+                  phase.status == AcceleratorProjectStatus.voting &&
+                  !votedPhaseIds!.contains(phase.id)),
         );
       }
       if (selectedProjectsFilterTag
           .contains(AccProjectsFilterTag.alreadyVoted)) {
         votedProjectIds ??= await _getVotedProjectIdsByPillar(filteredProjects);
+        votedPhaseIds ??= await _getVotedPhaseIdsByPillar(filteredProjects);
         filteredProjects = filteredProjects.where(
-          (project) => votedProjectIds!.contains(project.id),
+          (project) =>
+              (project.status == AcceleratorProjectStatus.voting &&
+                  votedProjectIds!.contains(project.id)) ||
+              project.phases.any((phase) =>
+                  phase.status == AcceleratorProjectStatus.voting &&
+                  votedPhaseIds!.contains(phase.id)),
         );
       }
       return filteredProjects.toSet();
@@ -245,6 +256,18 @@ class ProjectListBloc with RefreshBlocMixin {
     var pillarVotes = await zenon!.embedded.accelerator.getPillarVotes(
       pillarInfo!.name,
       projects.map((e) => e.id.toString()).toList(),
+    );
+    return pillarVotes.where((e) => e != null).map((e) => e!.id);
+  }
+
+  Future<Iterable<Hash>> _getVotedPhaseIdsByPillar(
+      Iterable<Project> projects) async {
+    var pillarVotes = await zenon!.embedded.accelerator.getPillarVotes(
+      pillarInfo!.name,
+      projects
+          .expand((project) => project.phaseIds)
+          .map((id) => id.toString())
+          .toList(),
     );
     return pillarVotes.where((e) => e != null).map((e) => e!.id);
   }

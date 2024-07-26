@@ -71,7 +71,7 @@ class _NodeManagementState extends State<NodeManagement> {
       title: 'Node Management',
       description:
           'This card allows one to set the ZNN Node used to connect to. '
-          'By default the wallet is connected to the embedded node. '
+          'By default the wallet is connected to the Embedded Node. '
           'If you are running a local ZNN Node, please use the localhost option',
       childBuilder: () => _getWidgetBody(),
     );
@@ -127,46 +127,31 @@ class _NodeManagementState extends State<NodeManagement> {
 
     try {
       _confirmNodeButtonKey.currentState?.animateForward();
-      String url = _selectedNode == 'Embedded Node'
-          ? kLocalhostDefaultNodeUrl
-          : _selectedNode!;
-      bool isConnectionEstablished =
-          await NodeUtils.establishConnectionToNode(url);
-      if (_selectedNode == 'Embedded Node') {
-        // Check if node is already running
-        if (!isConnectionEstablished) {
-          // Initialize local full node
-          await Isolate.spawn(EmbeddedNode.runNode, [''],
-              onExit: sl<ReceivePort>(instanceName: 'embeddedStoppedPort')
-                  .sendPort);
-          kEmbeddedNodeRunning = true;
-          // The node needs a couple of seconds to actually start
-          await Future.delayed(kEmbeddedConnectionDelay);
-          isConnectionEstablished =
-              await NodeUtils.establishConnectionToNode(url);
-        }
-      } else {
-        isConnectionEstablished =
-            await NodeUtils.establishConnectionToNode(url);
-        if (isConnectionEstablished) {
-          await NodeUtils.closeEmbeddedNode();
-        }
-      }
+      var isConnectionEstablished =
+          await _establishConnectionToNode(_selectedNode);
       if (isConnectionEstablished) {
+        kNodeChainId = await NodeUtils.getNodeChainIdentifier();
         if (await _checkForChainIdMismatch()) {
+          await htlcSwapsService!.storeLastCheckedHtlcBlockHeight(0);
           await sharedPrefsService!.put(
             kSelectedNodeKey,
             _selectedNode,
           );
           kCurrentNode = _selectedNode!;
-          _sendChangingNodeSuccessNotification();
+          await _sendChangingNodeSuccessNotification();
           widget.onNodeChangedCallback();
+        } else {
+          await _establishConnectionToNode(kCurrentNode);
+          kNodeChainId = await NodeUtils.getNodeChainIdentifier();
+          setState(() {
+            _selectedNode = kCurrentNode!;
+          });
         }
       } else {
         throw 'Connection could not be established to $_selectedNode';
       }
     } catch (e) {
-      NotificationUtils.sendNotificationError(
+      await NotificationUtils.sendNotificationError(
         e,
         'Connection failed',
       );
@@ -176,6 +161,33 @@ class _NodeManagementState extends State<NodeManagement> {
     } finally {
       _confirmNodeButtonKey.currentState?.animateReverse();
     }
+  }
+
+  Future<bool> _establishConnectionToNode(String? url) async {
+    String targetUrl = url == kEmbeddedNode ? kLocalhostDefaultNodeUrl : url!;
+    bool isConnectionEstablished =
+        await NodeUtils.establishConnectionToNode(targetUrl);
+    if (url == kEmbeddedNode) {
+      // Check if node is already running
+      if (!isConnectionEstablished) {
+        // Initialize local full node
+        await Isolate.spawn(EmbeddedNode.runNode, [''],
+            onExit:
+                sl<ReceivePort>(instanceName: 'embeddedStoppedPort').sendPort);
+        kEmbeddedNodeRunning = true;
+        // The node needs a couple of seconds to actually start
+        await Future.delayed(kEmbeddedConnectionDelay);
+        isConnectionEstablished =
+            await NodeUtils.establishConnectionToNode(targetUrl);
+      }
+    } else {
+      isConnectionEstablished =
+          await NodeUtils.establishConnectionToNode(targetUrl);
+      if (isConnectionEstablished) {
+        await NodeUtils.closeEmbeddedNode();
+      }
+    }
+    return isConnectionEstablished;
   }
 
   Widget _getAddNodeExpandableChild() {
@@ -213,11 +225,12 @@ class _NodeManagementState extends State<NodeManagement> {
   bool _ifUserInputValid() =>
       InputValidators.node(_newNodeController.text) == null;
 
-  void _onAddNodePressed() async {
+  Future<void> _onAddNodePressed() async {
     if ([...kDbNodes, ...kDefaultCommunityNodes, ...kDefaultNodes]
         .contains(_newNodeController.text)) {
-      NotificationUtils.sendNotificationError(
-          'Node already exists', 'Node already exists');
+      await NotificationUtils.sendNotificationError(
+          'Node ${_newNodeController.text} already exists',
+          'Node already exists');
     } else {
       _addNodeToDb();
     }
@@ -231,11 +244,11 @@ class _NodeManagementState extends State<NodeManagement> {
       }
       Hive.box<String>(kNodesBox).add(_newNodeController.text);
       await NodeUtils.loadDbNodes();
-      _sendAddNodeSuccessNotification();
+      await _sendAddNodeSuccessNotification();
       _newNodeController = TextEditingController();
       _newNodeKey = GlobalKey();
     } catch (e) {
-      NotificationUtils.sendNotificationError(e, 'Error while adding new node');
+      await NotificationUtils.sendNotificationError(e, 'Error while adding new node');
     } finally {
       _addNodeButtonKey.currentState?.animateReverse();
     }
@@ -282,8 +295,8 @@ class _NodeManagementState extends State<NodeManagement> {
     );
   }
 
-  void _sendChangingNodeSuccessNotification() {
-    sl.get<NotificationsBloc>().addNotification(
+  Future<void> _sendChangingNodeSuccessNotification() async {
+    await sl.get<NotificationsBloc>().addNotification(
           WalletNotification(
             title: 'Successfully connected to $_selectedNode',
             timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -300,8 +313,8 @@ class _NodeManagementState extends State<NodeManagement> {
     super.dispose();
   }
 
-  void _sendAddNodeSuccessNotification() {
-    sl.get<NotificationsBloc>().addNotification(
+  Future<void> _sendAddNodeSuccessNotification() async {
+    await sl.get<NotificationsBloc>().addNotification(
           WalletNotification(
             title: 'Successfully added node ${_newNodeController.text}',
             timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -378,13 +391,13 @@ class _NodeManagementState extends State<NodeManagement> {
       _confirmChainIdButtonKey.currentState?.animateForward();
       setChainIdentifier(chainIdentifier: _newChainId);
       await sharedPrefsService!.put(kChainIdKey, _newChainId);
-      sl<IWeb3WalletService>().emitChainIdChangeEvent(_newChainId.toString());
-      _sendSuccessfullyChangedChainIdNotification(_newChainId);
+      await sl<IWeb3WalletService>().emitChainIdChangeEvent(_newChainId.toString());
+      await _sendSuccessfullyChangedChainIdNotification(_newChainId);
       _initCurrentChainId();
       _newChainIdController = TextEditingController();
       _newChainIdKey = GlobalKey();
     } catch (e) {
-      NotificationUtils.sendNotificationError(
+      await NotificationUtils.sendNotificationError(
         e,
         'Error while setting the new client chain identifier',
       );
@@ -393,8 +406,8 @@ class _NodeManagementState extends State<NodeManagement> {
     }
   }
 
-  void _sendSuccessfullyChangedChainIdNotification(int newChainId) {
-    sl.get<NotificationsBloc>().addNotification(
+  Future<void> _sendSuccessfullyChangedChainIdNotification(int newChainId) async {
+    await sl.get<NotificationsBloc>().addNotification(
           WalletNotification(
             title:
                 'Successfully changed client chain identifier to $newChainId',

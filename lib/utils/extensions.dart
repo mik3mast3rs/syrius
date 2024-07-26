@@ -1,4 +1,6 @@
+import 'dart:math' show pow;
 import 'package:big_decimal/big_decimal.dart';
+import 'package:znn_ledger_dart/znn_ledger_dart.dart';
 
 extension StringExtensions on String {
   String capitalize() {
@@ -9,6 +11,9 @@ extension StringExtensions on String {
 
   BigInt extractDecimals(int decimals) {
     if (!contains('.')) {
+      if (decimals == 0 && isEmpty) {
+        return BigInt.zero;
+      }
       return BigInt.parse(this + ''.padRight(decimals, '0'));
     }
     List<String> parts = split('.');
@@ -18,9 +23,14 @@ extension StringExtensions on String {
             ? parts[1].substring(0, decimals)
             : parts[1].padRight(decimals, '0')));
   }
-  //BigInt.parse(num.parse(this).toStringAsFixed(decimals).replaceAll('.', ''));
 
   String abs() => this;
+}
+
+extension FixedNumDecimals on double {
+  String toStringFixedNumDecimals(int numDecimals) {
+    return '${(this * pow(10, numDecimals)).truncate() / pow(10, numDecimals)}';
+  }
 }
 
 extension BigIntExtensions on BigInt {
@@ -57,5 +67,56 @@ extension ShortString on String {
     final longString = this;
     return '${longString.substring(0, 6)}...'
         '${longString.substring(longString.length - 6)}';
+  }
+}
+
+extension LedgerErrorExtensions on LedgerError {
+  String toFriendlyString() {
+    return when(
+        connectionError: (origMessage) => origMessage,
+        responseError: (statusWord) => _mapStatusWord(statusWord));
+  }
+
+  String _mapStatusWord(StatusWord statusWord) {
+    switch (statusWord) {
+      case StatusWord.deny:
+        return 'Deny';
+      case StatusWord.wrongP1P2:
+        return 'Invalid P1 or P2';
+      case StatusWord.wrongDataLength:
+        return 'Invalid data length';
+      case StatusWord.inactiveDevice:
+        return 'Device is inactive';
+      case StatusWord.notAllowed:
+        return 'Request not allowed';
+      case StatusWord.insNotSupported:
+        return 'Instruction not supported, please make sure the Zenon app is opened';
+      case StatusWord.claNotSupported:
+        return 'Class not supported, please make sure the Zenon app is opened';
+      case StatusWord.appIsNotOpen:
+        return 'App not open, please open the Zenon app on your device';
+      case StatusWord.wrongResponseLength:
+        return 'Invalid response, please reconnect the device and try again';
+      case StatusWord.displayBip32PathFail:
+        return 'Failed to display BIP32 path';
+      case StatusWord.displayAddressFail:
+        return 'Failed to display address';
+      case StatusWord.displayAmountFail:
+        return 'Failed to display amount';
+      case StatusWord.wrongTxLength:
+        return 'Invalid transaction length';
+      case StatusWord.txParsingFail:
+        return 'Failed to parse transaction';
+      case StatusWord.txHashFail:
+        return 'Failed to hash transaction';
+      case StatusWord.badState:
+        return 'Bad state, please reconnect the device and try again';
+      case StatusWord.signatureFail:
+        return 'Failed to create signature';
+      case StatusWord.success:
+        return 'Success';
+      case StatusWord.unknownError:
+        return 'Unknown error, please make sure the device is unlocked';
+    }
   }
 }

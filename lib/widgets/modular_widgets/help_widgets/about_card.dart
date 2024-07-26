@@ -129,6 +129,11 @@ class AboutCardState extends State<AboutCard> {
               znnDefaultPaths.wallet.absolute.path),
         ),
         CustomExpandablePanel(
+          'Syrius wallet type',
+          _getGenericOpenButtonExpandedChild(
+              kWalletFile!.walletType),
+        ),
+        CustomExpandablePanel(
           'Client hostname',
           _getGenericTextExpandedChild(Platform.localHostname),
         ),

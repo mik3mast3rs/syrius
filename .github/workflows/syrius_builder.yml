@@ -2,31 +2,38 @@ name: Build and release syrius
 
 on:
   push:
-    branches:
-        - master
-  pull_request:
-    branches:
-      - dev
-  # Allows you to run this workflow manually from the Actions tab
+    branches-ignore:
+      - master
+    tags:
+      - '*'
   workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: "3.19.x"
 
 jobs:
   build-macos:
     runs-on: macos-12
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+      - name: Checkout zenon-node-database repository
+        uses: actions/checkout@v4
+        with:
+          repository: HyperCore-One/zenon-node-database
+          path: ./node-db
+          ref: main
+      - name: Copy community nodes
+        run: cp -r ./node-db/rpc-nodes-mainnet.json ./assets/community-nodes.json
       - name: Setup environment
         run: |
           brew install unzip create-dmg
           brew cleanup
-      - name: Checkout
-        uses: actions/checkout@v3
       - name: Setup Flutter
-        uses: subosito/flutter-action@v2.10.0
+        uses: subosito/flutter-action@v2
         with:
+          flutter-version: ${{env.FLUTTER_VERSION}}
           channel: "stable"
-          flutter-version: "3.10.2"
       - name: Check flutter version
         run: flutter --version
       - name: Build syrius desktop 
@@ -49,7 +56,7 @@ jobs:
           --hdiutil-verbose syrius-alphanet-macos-universal.dmg build/macos/Build/Products/Release/s\ y\ r\ i\ u\ s.app \
           syrius-alphanet-macos-universal.dmg build/macos/Build/Products/Release/s\ y\ r\ i\ u\ s.app
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: macos-artifacts
           path: syrius-alphanet-macos-universal.dmg
@@ -57,12 +64,21 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2.10.0
+        uses: actions/checkout@v4
+      - name: Checkout zenon-node-database repository
+        uses: actions/checkout@v4
         with:
+          repository: HyperCore-One/zenon-node-database
+          path: ./node-db
+          ref: main
+      - name: Copy community nodes
+        shell: pwsh
+        run: Copy-Item .\node-db\rpc-nodes-mainnet.json .\assets\community-nodes.json -Force
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{env.FLUTTER_VERSION}}
           channel: "stable"
-          flutter-version: "3.10.2"
       - name: Check flutter version
         run: flutter --version
       - name: Build syrius desktop
@@ -71,9 +87,9 @@ jobs:
           flutter build windows --release   
       - name: Package into zip
         run: |
-          Compress-Archive -Path build\windows\runner\Release\* -DestinationPath .\syrius-alphanet-windows-amd64.zip
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath .\syrius-alphanet-windows-amd64.zip
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: windows-artifacts
           path: syrius-alphanet-windows-amd64.zip
@@ -81,16 +97,24 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+      - name: Checkout zenon-node-database repository
+        uses: actions/checkout@v4
+        with:
+          repository: HyperCore-One/zenon-node-database
+          path: ./node-db
+          ref: main
+      - name: Copy community nodes
+        run: cp -r ./node-db/rpc-nodes-mainnet.json assets/community-nodes.json
       - name: Prepare environment
         run: |
           sudo apt update
           sudo apt install -y curl clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev unzip xz-utils zip libnotify-dev libayatana-appindicator3-dev
       - name: Setup Flutter
-        uses: subosito/flutter-action@v2.10.0
+        uses: subosito/flutter-action@v2
         with:
+          flutter-version: ${{env.FLUTTER_VERSION}}
           channel: "stable"
-          flutter-version: "3.10.2"
       - name: Set permissions
         run: |
           sudo chmod -R 777 linux/
@@ -107,26 +131,25 @@ jobs:
           cd build/linux/x64/release/bundle
           zip -r ../../../../../syrius-alphanet-linux-amd64.zip *
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: linux-artifacts
           path: syrius-alphanet-linux-amd64.zip
   make-release:
     needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Set variables
         run: |
-          SYRIUS="v$(cat pubspec.yaml | grep version | sed 's/version://' | xargs)"
-          echo "Syrius Version: $SYRIUS"
-          echo "SYRIUS_VERSION=$SYRIUS" >> $GITHUB_ENV
+          echo "SYRIUS_VERSION=${{ github.ref }}" >> $GITHUB_ENV
+          echo "Syrius Version: $SYRIUS_VERSION"
           GOZENON=$(curl -s https://raw.githubusercontent.com/zenon-network/go-zenon/master/metadata/version.go | grep Version | awk -F '"' '{print $2}')
           echo "Go-Zenon Version: $GOZENON"
           BODY=$(cat <<EOF
-          Syrius $SYRIUS features the pre-release version of the [go-zenon](https://github.com/zenon-network/go-zenon) $GOZENON full node.
+          Syrius $SYRIUS_VERSION features the pre-release version of the [go-zenon](https://github.com/zenon-network/go-zenon) $GOZENON full node.
 
           Syrius for Windows requires Microsoft Visual C++ to be installed.
           [Download Microsoft Visual C++](https://aka.ms/vs/16/release/vc_redist.x64.exe)
@@ -146,15 +169,15 @@ jobs:
       - name: Prepare releases directory
         run: mkdir releases
       - name: Download macOS artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: macos-artifacts
       - name: Download Windows artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: windows-artifacts
       - name: Download Linux artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: linux-artifacts
       - name: Prepare releases
@@ -168,12 +191,13 @@ jobs:
           echo $(sha256sum *)
           echo $(sha256sum *) >> SHA256CHECKSUMS.txt
       - name: Upload files to a GitHub release
-        uses: svenstaro/upload-release-action@2.4.1
+        uses: svenstaro/upload-release-action@2.9.0
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: releases/*
           release_name: ${{ env.SYRIUS_VERSION }}
-          tag: ${{ env.SYRIUS_VERSION }}-alphanet
+          prerelease: ${{ contains(env.SYRIUS_VERSION, '-') }}
+          tag: ${{ env.SYRIUS_VERSION }}
           file_glob: true
+          file: releases/*
           overwrite: true
           body: ${{ env.BODY }}
